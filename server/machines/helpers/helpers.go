@@ -65,10 +65,8 @@ func getMachine(initialState machines.StateType, mtype, id string, userID core.U
 		return mch, err
 	}
 
-	if action := registerActionForKind(mtype); action != nil {
-		register := mch.States[machines.REGISTERED]
-		mch.States[machines.REGISTERED] = *register.RegisterAction(action)
-	}
+	register := mch.States[machines.REGISTERED]
+	mch.States[machines.REGISTERED] = *register.RegisterAction(registerActionForKind(mtype))
 
 	connect := mch.States[machines.CONNECTED]
 	mch.States[machines.CONNECTED] = *connect.RegisterAction(&machines.DefaultConnectAction{})
@@ -76,8 +74,10 @@ func getMachine(initialState machines.StateType, mtype, id string, userID core.U
 	return mch, nil
 }
 
-// registerActionForKind returns the kind-specific action run on entry to the
-// REGISTERED state, or nil when the kind has no verification step.
+// registerActionForKind returns the action run on entry to the REGISTERED
+// state: the kind-specific verification action, or a no-op when the kind has
+// no verification step. It never returns nil - SendEvent rejects a transition
+// into a state with no action, so a nil here makes the kind unregisterable.
 func registerActionForKind(mtype string) machines.Action {
 	switch mtype {
 	case "grafana":
@@ -85,7 +85,7 @@ func registerActionForKind(mtype string) machines.Action {
 	case "prometheus":
 		return &prometheus.RegisterAction{}
 	}
-	return nil
+	return &machines.DefaultRegisterAction{}
 }
 
 // HasMachineContext reports whether a state machine instance exists and carries

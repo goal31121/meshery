@@ -26,6 +26,24 @@ type Action interface {
 	ExecuteOnExit(context context.Context, machinectx interface{}, data interface{}) (EventType, *events.Event, error)
 }
 
+// DefaultRegisterAction is the REGISTERED action for kinds without a
+// verification step (e.g. artifacthub, github). It does nothing, but SendEvent
+// refuses to enter a state whose Action is nil, so without it such kinds could
+// never leave DISCOVERED. Persistence happens on connect (DefaultConnectAction).
+type DefaultRegisterAction struct{}
+
+func (da *DefaultRegisterAction) ExecuteOnEntry(ctx context.Context, machineCtx interface{}, data interface{}) (EventType, *events.Event, error) {
+	return NoOp, nil, nil
+}
+
+func (da *DefaultRegisterAction) Execute(ctx context.Context, machineCtx interface{}, data interface{}) (EventType, *events.Event, error) {
+	return NoOp, nil, nil
+}
+
+func (da *DefaultRegisterAction) ExecuteOnExit(ctx context.Context, machineCtx interface{}, data interface{}) (EventType, *events.Event, error) {
+	return NoOp, nil, nil
+}
+
 type DefaultConnectAction struct{}
 
 func (da *DefaultConnectAction) ExecuteOnEntry(ctx context.Context, machineCtx interface{}, data interface{}) (EventType, *events.Event, error) {

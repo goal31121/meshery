@@ -1,11 +1,16 @@
 package helpers
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/gofrs/uuid"
 	"github.com/meshery/meshery/server/machines"
+	"github.com/meshery/meshery/server/machines/grafana"
 	"github.com/meshery/meshery/server/machines/kubernetes"
+	"github.com/meshery/meshery/server/machines/prometheus"
+	"github.com/meshery/meshery/server/models"
 	"github.com/meshery/meshkit/logger"
 	"github.com/meshery/schemas/models/core"
 )
@@ -80,17 +85,18 @@ func TestGetMachineCoversEveryDefinitionKind(t *testing.T) {
 
 	tests := []struct {
 		kind string
-		// Kinds with a reachability probe run an action on entry to REGISTERED;
-		// the rest register with no extra action.
-		wantRegisterAction bool
+		// Kinds with a reachability probe run it on entry to REGISTERED; the
+		// rest get the no-op DefaultRegisterAction. Never nil: SendEvent refuses
+		// to enter a state with no action.
+		wantRegisterAction machines.Action
 	}{
-		{kind: "kubernetes", wantRegisterAction: true},
-		{kind: "grafana", wantRegisterAction: true},
-		{kind: "prometheus", wantRegisterAction: true},
-		{kind: "artifacthub", wantRegisterAction: false},
-		{kind: "github", wantRegisterAction: false},
+		{kind: "kubernetes"},
+		{kind: "grafana", wantRegisterAction: &grafana.RegisterAction{}},
+		{kind: "prometheus", wantRegisterAction: &prometheus.RegisterAction{}},
+		{kind: "artifacthub", wantRegisterAction: &machines.DefaultRegisterAction{}},
+		{kind: "github", wantRegisterAction: &machines.DefaultRegisterAction{}},
 		// Any other definition-backed kind must resolve too, not error.
-		{kind: "some-future-kind", wantRegisterAction: false},
+		{kind: "some-future-kind", wantRegisterAction: &machines.DefaultRegisterAction{}},
 	}
 
 	for _, tt := range tests {
@@ -108,14 +114,50 @@ func TestGetMachineCoversEveryDefinitionKind(t *testing.T) {
 				return
 			}
 
-			gotRegisterAction := mch.States[machines.REGISTERED].Action != nil
-			if gotRegisterAction != tt.wantRegisterAction {
-				t.Fatalf("getMachine(%q) REGISTERED action present = %v, want %v", tt.kind, gotRegisterAction, tt.wantRegisterAction)
+			gotRegisterAction := mch.States[machines.REGISTERED].Action
+			if fmt.Sprintf("%T", gotRegisterAction) != fmt.Sprintf("%T", tt.wantRegisterAction) {
+				t.Fatalf("getMachine(%q) REGISTERED action = %T, want %T", tt.kind, gotRegisterAction, tt.wantRegisterAction)
 			}
 			// Every non-Kubernetes kind persists the connection and its
 			// credential on connect.
 			if mch.States[machines.CONNECTED].Action == nil {
 				t.Fatalf("getMachine(%q) has no CONNECTED action; the connection would never be persisted", tt.kind)
+			}
+		})
+	}
+}
+
+// The Create Connection wizard registers every non-Kubernetes kind by sending
+// Register to a machine initialized at DISCOVERED, then Connect. Kinds without
+// a verification step must be able to take that first transition; asserting
+// only that an action is attached (above) never caught that they could not
+// (meshery#22708).
+func TestRegisterFromDiscoveredWithoutVerifyAction(t *testing.T) {
+	log, err := logger.New("test", logger.Options{Format: logger.JsonLogFormat})
+	if err != nil {
+		t.Fatalf("logger.New() error = %v", err)
+	}
+	userID := core.Uuid(uuid.Must(uuid.NewV4()))
+	sysID := core.Uuid(uuid.Must(uuid.NewV4()))
+	ctx := context.WithValue(context.Background(), models.UserCtxKey, &models.User{ID: userID})
+	ctx = context.WithValue(ctx, models.SystemIDKey, &sysID)
+
+	for _, kind := range []string{"github", "artifacthub", "some-future-kind"} {
+		t.Run(kind, func(t *testing.T) {
+			mch, err := getMachine(machines.DISCOVERED, kind, uuid.Must(uuid.NewV4()).String(), userID, log, nil)
+			if err != nil {
+				t.Fatalf("getMachine(%q) error = %v", kind, err)
+			}
+
+			if _, err := mch.SendEvent(ctx, machines.Register, nil); err != nil {
+				t.Fatalf("Register from %s: error = %v, want nil", machines.DISCOVERED, err)
+			}
+			if mch.CurrentState != machines.REGISTERED {
+				t.Fatalf("Register from %s: state = %s, want %s", machines.DISCOVERED, mch.CurrentState, machines.REGISTERED)
+			}
+			// The follow-up Connect event must have an edge out of REGISTERED.
+			if got := mch.States[machines.REGISTERED].Events[machines.Connect]; got != machines.CONNECTED {
+				t.Fatalf("REGISTERED --%s--> %q, want %s", machines.Connect, got, machines.CONNECTED)
 			}
 		})
 	}
